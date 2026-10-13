@@ -1,43 +1,127 @@
+name: Build debug APK
 
-name: Build ReoGames APK
-
+# يعمل عند كل رفع إلى main/master، ويدوياً من تبويب Actions (Run workflow).
 on:
   workflow_dispatch:
   push:
-    branches: [main, master]
+    branches: [ main, master ]
+
+permissions:
+  contents: write   # لازم فقط لنشر الـ APK في Releases (الخطوة الأخيرة)
 
 jobs:
   build:
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
+    timeout-minutes: 45
 
     steps:
-      - name: Checkout repository
-        uses: actions/checkout@v4
+      - uses: actions/checkout@v4
 
-      - name: Extract project
-        run: unzip -o ReoGames.zip
+      # يعمل في الحالتين: (أ) المشروع مرفوع كملفات، أو (ب) مرفوع كملف ZIP واحد (الأسهل من الهاتف).
+      - name: Locate project (unzip if only a ZIP was uploaded)
+        id: proj
+        shell: bash
+        run: |
+          set -eo pipefail
+          find_settings() { find . -name settings.gradle.kts -not -path './.git/*' -not -path './_unzipped/*' -print -quit; }
+          if [ -z "$(find_settings)" ]; then
+            ZIP="$(find . -maxdepth 2 -iname '*.zip' -not -path './.git/*' -print -quit)"
+            if [ -z "$ZIP" ]; then
+              echo "::error::No Android project (settings.gradle.kts) and no .zip file found in the repository root."
+              exit 1
+            fi
+            echo "Unzipping: $ZIP"
+            mkdir -p _unzipped
+            unzip -q -o "$ZIP" -d _unzipped
+            SETTINGS="$(find _unzipped -name settings.gradle.kts -print -quit)"
+          else
+            SETTINGS="$(find_settings)"
+          fi
+          if [ -z "$SETTINGS" ]; then
+            echo "::error::settings.gradle.kts not found inside the project/ZIP."
+            exit 1
+          fi
+          DIR="$(dirname "$SETTINGS")"
+          echo "Project directory: $DIR"
+          ls -la "$DIR"
+          echo "dir=$DIR" >> "$GITHUB_OUTPUT"
 
-      - name: Set up Java
-        uses: actions/setup-java@v4
+      - uses: actions/setup-java@v4
         with:
           distribution: temurin
           java-version: '17'
 
-      - name: Set up Android SDK
-        uses: android-actions/setup-android@v3
+      # أجهزة GitHub تأتي بـ Android SDK جاهز (platform 34 و build-tools 34.0.0)،
+      # لذلك لا نستخدم android-actions/setup-android (سبب الخطأ "Failed to find package 'tools'").
+      - name: Check Android SDK (preinstalled on the runner)
+        shell: bash
+        run: |
+          echo "ANDROID_HOME=$ANDROID_HOME"
+          SDKM="$(command -v sdkmanager || true)"
+          [ -n "$SDKM" ] || SDKM="$ANDROID_HOME/cmdline-tools/latest/bin/sdkmanager"
+          yes | "$SDKM" --licenses > /dev/null 2>&1 || true
+          if [ ! -d "$ANDROID_HOME/platforms/android-34" ] || [ ! -d "$ANDROID_HOME/build-tools/34.0.0" ]; then
+            echo "Installing missing SDK packages..."
+            "$SDKM" "platforms;android-34" "build-tools;34.0.0"
+          fi
+          ls "$ANDROID_HOME/platforms" "$ANDROID_HOME/build-tools"
 
-      - name: Install Android SDK packages
-        run: sdkmanager "platform-tools" "platforms;android-35" "build-tools;35.0.0"
+      # المشروع يحتاج Gradle 8.9 (الجهاز يحمل Gradle 9 وهو غير متوافق مع AGP 8.5)،
+      # لذلك نثبّت 8.9 صراحةً ولا نعتمد على gradlew (يتفادى مشكلة صلاحية التنفيذ عند الرفع من الهاتف).
+      - uses: gradle/actions/setup-gradle@v4
+        with:
+          gradle-version: '8.9'
 
-      - name: Set up Gradle
-        uses: gradle/actions/setup-gradle@v4
+      - name: Build debug APK
+        shell: bash
+        working-directory: ${{ steps.proj.outputs.dir }}
+        env:
+          # اختياري: أضف سرّاً باسم RAWG_API_KEY لتضمين المفتاح. بدونه تدخل المفتاح من داخل التطبيق.
+          RAWG_API_KEY: ${{ secrets.RAWG_API_KEY }}
+        run: |
+          set -o pipefail
+          gradle assembleDebug --stacktrace --no-daemon 2>&1 | tee "$RUNNER_TEMP/build.log"
 
-      - name: Build APK
-        working-directory: ReoGames
-        run: chmod +x gradlew && ./gradlew assembleDebug --stacktrace
+      # عند الفشل: ضع أهم أسطر الخطأ في ملخص التشغيل لتنسخها بسهولة من الهاتف.
+      - name: Show errors in summary
+        if: failure()
+        shell: bash
+        run: |
+          {
+            echo '### Build failed — key lines'
+            echo '```'
+            grep -E '^e: |error:|What went wrong|Execution failed|Could not' -A2 "$RUNNER_TEMP/build.log" | head -120 || true
+            echo '```'
+          } >> "$GITHUB_STEP_SUMMARY"
 
-      - name: Upload APK
+      - name: Upload build log (on failure)
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: build-log
+          path: ${{ runner.temp }}/build.log
+          if-no-files-found: ignore
+
+      - name: Upload APK artifact
         uses: actions/upload-artifact@v4
         with:
           name: ReoGames-debug-apk
-          path: ReoGames/app/build/outputs/apk/debug/app-debug.apk
+          path: ${{ steps.proj.outputs.dir }}/app/build/outputs/apk/debug/app-debug.apk
+          if-no-files-found: error
+
+      # إضافة مريحة للهاتف: تنزيل الـ APK مباشرةً من Releases دون فك ضغط.
+      - name: Publish APK to Releases
+        continue-on-error: true
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
+        run: |
+          APK="${{ steps.proj.outputs.dir }}/app/build/outputs/apk/debug/app-debug.apk"
+          cp "$APK" "$RUNNER_TEMP/ReoGames-debug.apk"
+          gh release delete latest-debug --cleanup-tag --yes || true
+          gh release create latest-debug "$RUNNER_TEMP/ReoGames-debug.apk" \
+            --target "${{ github.sha }}" \
+            --title "Reo Games - latest debug APK" \
+            --notes "Debug build from commit ${{ github.sha }}" \
+            --prerelease

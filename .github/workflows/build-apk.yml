@@ -78,6 +78,14 @@ jobs:
         env:
           # اختياري: أضف سرّاً باسم RAWG_API_KEY لتضمين المفتاح. بدونه تدخل المفتاح من داخل التطبيق.
           RAWG_API_KEY: ${{ secrets.RAWG_API_KEY }}
+          # اختيارية — تُضبط من Settings ▸ Secrets and variables ▸ Actions ▸ تبويب Variables (ليست أسراراً).
+          # نسخة debug تستخدم إعلانات Google التجريبية دائماً حتى لو ضبطتَ معرّفاتك الحقيقية (هي لنسخة release فقط).
+          ADMOB_APP_ID: ${{ vars.ADMOB_APP_ID }}
+          ADMOB_BANNER_UNIT_ID: ${{ vars.ADMOB_BANNER_UNIT_ID }}
+          # رابط صفحة التبرع (https)، ورابط GitHub، وسياسة الخصوصية: كلها اختيارية.
+          DONATION_URL: ${{ vars.DONATION_URL }}
+          GITHUB_URL: ${{ vars.GITHUB_URL }}
+          PRIVACY_POLICY_URL: ${{ vars.PRIVACY_POLICY_URL }}
         run: |
           set -o pipefail
           gradle assembleDebug --stacktrace --no-daemon 2>&1 | tee "$RUNNER_TEMP/build.log"

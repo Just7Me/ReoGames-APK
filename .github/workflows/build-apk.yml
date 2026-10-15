@@ -84,7 +84,7 @@ jobs:
           ADMOB_BANNER_UNIT_ID: ${{ vars.ADMOB_BANNER_UNIT_ID }}
           # رابط صفحة التبرع (https)، ورابط GitHub، وسياسة الخصوصية: كلها اختيارية.
           DONATION_URL: ${{ vars.DONATION_URL }}
-          GITHUB_URL: ${{ vars.GITHUB_URL }}
+          PROJECT_GITHUB_URL: ${{ vars.PROJECT_GITHUB_URL }}
           PRIVACY_POLICY_URL: ${{ vars.PRIVACY_POLICY_URL }}
         run: |
           set -o pipefail
